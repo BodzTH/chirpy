@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync/atomic"
 )
 
@@ -42,6 +44,61 @@ func healthz(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
 }
 
+func respondWithError(w http.ResponseWriter, code int, msg string) {
+	type returnError struct {
+		Error string `json:"error"`
+	}
+	errReturn := returnError{
+		Error: msg,
+	}
+	errMsg, _ := json.Marshal(errReturn)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	w.Write(errMsg)
+}
+
+func respondWithJSON(w http.ResponseWriter, code int, payload any) {
+	data, _ := json.Marshal(payload)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	w.Write(data)
+}
+
+func validateChirp(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Body string `json:"body"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, 500, "Something went wrong")
+		return
+	}
+	if len(params.Body) > 140 {
+		respondWithError(w, 400, "Chirp is too long")
+		return
+	}
+	splittedBody := strings.Split(params.Body, " ")
+	badWords := [3]string{"kerfuffle", "sharbert", "fornax"}
+	for _, badWord := range badWords {
+		for index, word := range splittedBody {
+			if badWord == strings.ToLower(string(word)) {
+				splittedBody[index] = "****"
+			}
+		}
+	}
+	cleanedBody := strings.Join(splittedBody, " ")
+	type returnValue struct {
+		CleandBody string `json:"cleaned_body"`
+	}
+	body := returnValue{
+		CleandBody: cleanedBody,
+	}
+	respondWithJSON(w, 200, body)
+}
+
 func main() {
 	mux := http.NewServeMux()
 	s := &http.Server{
@@ -50,9 +107,14 @@ func main() {
 	}
 	var apiCfg apiConfig
 	apiCfg.fileserverHits.Store(0)
-	mux.Handle("GET /admin/metrics", http.HandlerFunc(apiCfg.metrics))
-	mux.Handle("POST /admin/reset", http.HandlerFunc(apiCfg.reset))
+
 	mux.Handle("/app/", http.StripPrefix("/app", apiCfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))))
+
+	mux.HandleFunc("GET /admin/metrics", apiCfg.metrics)
+	mux.HandleFunc("POST /admin/reset", apiCfg.reset)
+
 	mux.HandleFunc("GET /api/healthz", healthz)
+	mux.HandleFunc("POST /api/validate_chirp", validateChirp)
+
 	s.ListenAndServe()
 }
